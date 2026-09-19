@@ -1,0 +1,41 @@
+# LiteLLM 게이트웨이 모델 정의
+#
+# 여기에 모델을 추가하면 http://localhost:4000 에서 OpenAI 호환 API 로 노출된다.
+# 키는 compose 가 컨테이너 환경변수로 넣어주므로 os.environ/ 로 참조한다.
+#
+# 확인:  curl http://localhost:4000/v1/models -H "Authorization: Bearer $LITELLM_MASTER_KEY"
+
+model_list:
+  # ---- 채팅 (app/models.py 의 get_model) ----
+  # 역할별 배정: orchestrator/judge -> opus, domain/trend -> sonnet
+  - model_name: claude-opus-5
+    litellm_params:
+      model: anthropic/claude-opus-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # ---- 임베딩 (app/models.py 의 get_embeddings) ----
+  - model_name: text-embedding-3-small
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+  # ---- 리랭커 (app/models.py 의 get_original_reranker) ----
+  - model_name: rerank-multilingual-v3.0
+    litellm_params:
+      model: cohere/rerank-multilingual-v3.0
+      api_key: os.environ/COHERE_API_KEY
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+litellm_settings:
+  drop_params: true
+  # 게이트웨이를 통과한 호출을 Langfuse 로도 보내려면 아래 주석을 풀 것.
+  # 이때 LANGFUSE_HOST 는 컨테이너 내부 주소(http://langfuse-web:3000)여야 한다.
+  # success_callback: ["langfuse"]
+  # failure_callback: ["langfuse"]

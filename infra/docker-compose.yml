@@ -1,0 +1,277 @@
+# 로컬 개발 스택
+#   LiteLLM(API Gateway) / Langfuse v3(LLMOps) / Qdrant(VectorDB)
+#
+# 실행:  cd infra && docker compose up -d
+# 중지:  docker compose down          (데이터 유지)
+#        docker compose down -v       (볼륨까지 삭제)
+#
+# 사전 준비
+#   1. .env.example 을 .env 로 복사하고 값을 채울 것
+#   2. Langfuse 는 첫 기동 때 LANGFUSE_INIT_* 값으로 프로젝트를 생성한다.
+#      app/.env 에 이미 있는 키를 그대로 넣으면 앱 설정을 안 고쳐도 된다.
+#
+# 포트 메모 (이 PC 기준)
+#   - 3000 은 기존 grafana 컨테이너가 사용 중 -> Langfuse 는 3300 사용
+#   - 6379 는 VS Code 포트 포워딩이 점유 -> redis 는 호스트에 공개하지 않음
+#   - LiteLLM 용 postgres 도 Langfuse postgres(5432)와 겹치므로 공개하지 않음
+
+# langfuse-web 와 langfuse-worker 가 공유하는 환경변수.
+# x- 로 시작하는 최상위 키는 compose 가 무시하므로 앵커 정의용으로 쓴다.
+x-langfuse-env: &langfuse-common-env
+  # NEXTAUTH_URL 은 브라우저가 실제로 접속하는 주소와 같아야 로그인 콜백이 깨지지 않는다.
+  NEXTAUTH_URL: ${LANGFUSE_URL:-http://localhost:3300}
+  DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/postgres
+  SALT: ${LANGFUSE_SALT:?infra/.env 에 LANGFUSE_SALT 를 설정할 것}
+  ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?64자리 hex 필요}
+  TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-true}
+  LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: ${LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES:-false}
+
+  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LANGFUSE_S3_BUCKET:-langfuse}
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_USER:-minio}
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_PASSWORD:?}
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: ${LANGFUSE_S3_BUCKET:-langfuse}
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_USER:-minio}
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_PASSWORD:?}
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_AUTH: ${REDIS_PASSWORD:?infra/.env 에 REDIS_PASSWORD 를 설정할 것}
+  REDIS_TLS_ENABLED: "false"
+
+### 컨테이너 정의 => LiteLLM(API Gateway), LangFuse(LLMOps), Qdrant(VectorDB)
+services:
+
+  ## litellm ─ 모든 LLM 호출을 통과시키는 게이트웨이
+  litellm:
+    image: docker.litellm.ai/berriai/litellm:main-stable
+    restart: always
+    depends_on:
+      litellm-db:
+        condition: service_healthy
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    volumes:
+      # 모델 정의는 이 파일에 추가한다.
+      - ./litellm.config.yaml:/app/config.yaml:ro
+    command: ["--config=/app/config.yaml", "--port", "4000"]
+    env_file:
+      # ANTHROPIC/OPENAI/COHERE 키는 app/.env 에 이미 있으므로 그대로 읽어온다.
+      - ../app/.env
+    environment:
+      # env_file 보다 아래 값이 우선한다.
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?infra/.env 에 LITELLM_MASTER_KEY 를 설정할 것}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?infra/.env 에 LITELLM_SALT_KEY 를 설정할 것}
+      UI_USERNAME: ${LITELLM_UI_USERNAME:-admin}
+      UI_PASSWORD: ${LITELLM_UI_PASSWORD:-}
+      # app/.env 의 LANGFUSE_HOST 는 localhost 라 컨테이너 안에서는 못 쓴다. 내부 주소로 덮는다.
+      LANGFUSE_HOST: http://langfuse-web:3000
+      DATABASE_URL: postgresql://llmproxy:${LITELLM_DB_PASSWORD:-dbpassword9090}@litellm-db:5432/litellm
+      STORE_MODEL_IN_DB: "True"
+      # 업스트림 키(ANTHROPIC/OPENAI/COHERE)는 위 env_file(../app/.env)이 넣어준다.
+      # 여기에 ${VAR:-} 로 다시 선언하면 infra/.env 에 없는 값이 빈 문자열로
+      # env_file 을 덮어써서 인증이 깨진다. 선언하지 말 것.
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:4000/health/liveliness || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks: [toynet]
+
+  ## litellm-db ─ LiteLLM 전용 postgres. Langfuse 의 5432 와 겹쳐서 호스트에 노출하지 않는다.
+  litellm-db:
+    image: docker.io/postgres:16
+    restart: always
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: llmproxy
+      POSTGRES_PASSWORD: ${LITELLM_DB_PASSWORD:-dbpassword9090}
+    volumes:
+      - litellm_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d litellm -U llmproxy"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+    networks: [toynet]
+
+  ## langfuse-web ─ 대시보드 + 인제스천 API
+  langfuse-web:
+    image: docker.io/langfuse/langfuse:3
+    restart: always
+    depends_on: &langfuse-depends-on
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    ports:
+      # 3000 은 grafana 가 쓰고 있어 3300 으로 내보낸다.
+      - "${LANGFUSE_PORT:-3300}:3000"
+    environment:
+      <<: *langfuse-common-env
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?infra/.env 에 NEXTAUTH_SECRET 를 설정할 것}
+      # web 은 브라우저가 직접 받는 URL 을, worker 는 내부 주소를 쓴다.
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: ${LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT:-http://localhost:9090}
+      LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://minio:9000
+
+      # 첫 기동 때 조직/프로젝트/계정을 자동 생성한다.
+      # PUBLIC/SECRET 키를 app/.env 의 기존 값과 동일하게 주면 앱 설정을 그대로 쓸 수 있다.
+      LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-toyproject}
+      LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-Toy Project}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-it-agent}
+      LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-IT Agent}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_ADMIN_EMAIL:-}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_ADMIN_NAME:-admin}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_ADMIN_PASSWORD:-}
+    networks: [toynet]
+
+  ## langfuse-worker ─ 인제스천 큐 소비 및 ClickHouse 적재
+  langfuse-worker:
+    image: docker.io/langfuse/langfuse-worker:3
+    restart: always
+    depends_on: *langfuse-depends-on
+    ports:
+      - "127.0.0.1:3030:3030"
+    environment:
+      <<: *langfuse-common-env
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+    networks: [toynet]
+
+  ## postgres ─ Langfuse 메타데이터
+  postgres:
+    image: docker.io/postgres:${POSTGRES_VERSION:-17}
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - langfuse_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    networks: [toynet]
+
+  ## clickhouse ─ Langfuse 트레이스 저장소
+  clickhouse:
+    image: docker.io/clickhouse/clickhouse-server:24.12
+    restart: always
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
+    networks: [toynet]
+
+  ## redis ─ Langfuse 인제스천 큐.
+  ##          호스트 6379 를 VS Code 포트 포워딩이 점유 중이라 포트를 공개하지 않는다.
+  ##          (외부에서 붙어야 하면 아래 ports 주석을 풀고 다른 포트로 매핑할 것)
+  redis:
+    image: docker.io/redis:7
+    restart: always
+    command: >
+      --requirepass ${REDIS_PASSWORD:?infra/.env 에 REDIS_PASSWORD 를 설정할 것}
+      --maxmemory-policy noeviction
+    # ports:
+    #   - "127.0.0.1:6380:6379"
+    volumes:
+      - langfuse_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+    networks: [toynet]
+
+  ## minio ─ Langfuse 이벤트/미디어 오브젝트 스토리지
+  minio:
+    image: cgr.dev/chainguard/minio
+    restart: always
+    entrypoint: sh
+    command: -c 'mkdir -p /data/${LANGFUSE_S3_BUCKET:-langfuse} && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:?infra/.env 에 MINIO_PASSWORD 를 설정할 것}
+    ports:
+      - "9090:9000"
+      - "127.0.0.1:9091:9001"
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 1s
+      timeout: 5s
+      retries: 5
+      start_period: 1s
+    networks: [toynet]
+
+  ## qdrant ─ 현재 코드는 Pinecone 을 쓰고 있으나 전환 대비로 올려둔다.
+  qdrant:
+    image: docker.io/qdrant/qdrant:v1.12.4
+    restart: always
+    ports:
+      - "6333:6333"   # REST / 대시보드 http://localhost:6333/dashboard
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks: [toynet]
+
+### 볼륨 정의
+volumes:
+  langfuse_postgres_data:
+    driver: local
+  langfuse_clickhouse_data:
+    driver: local
+  langfuse_clickhouse_logs:
+    driver: local
+  langfuse_redis_data:
+    driver: local
+  langfuse_minio_data:
+    driver: local
+  litellm_postgres_data:
+    driver: local
+  qdrant_data:
+    driver: local
+
+### 네트워크 정의
+networks:
+  toynet:
+    driver: bridge
