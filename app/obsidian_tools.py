@@ -15,9 +15,10 @@
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
+
+from async_utils import run_coro
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +124,8 @@ def get_obsidian_tools() -> list:
         return []
 
     try:
-        tools = asyncio.run(_load())
+        # 이미 이벤트 루프가 도는 곳에서도 불릴 수 있으므로 run_coro 를 쓴다.
+        tools = run_coro(_load())
     except Exception as e:
         logger.warning("옵시디언 MCP 연결 실패(Obsidian 이 실행 중인지 확인): %s", e)
         return []
