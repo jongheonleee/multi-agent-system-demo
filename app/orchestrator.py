@@ -81,17 +81,24 @@ def classify(question: str) -> IntentOutput:
     return IntentOutput(intent="unknown", reason="분류 실패 폴백")
 
 
-def orchestrate(state: MainQueryState, config: RunnableConfig) -> MainQueryState:
+def orchestrate(state: MainQueryState, config: RunnableConfig) -> dict:
+    """의도를 분류하고 필요하면 재질문한다.
+
+    반환은 반드시 **바뀐 필드만 담은 dict** 여야 한다. state 객체를 통째로
+    돌려주면 LangGraph 가 모든 필드에 리듀서를 다시 적용해서, operator.add 를
+    쓰는 domain_answers 가 노드를 지날 때마다 중복 누적된다.
+    """
     question = state.messages[-1].text if state.messages else ""
 
     decision = classify(question)
-    state.query_type = decision.intent
     logger.info("의도=%s 이유=%s", decision.intent, decision.reason)
+
+    update: dict = {"query_type": decision.intent}
 
     if decision.needs_clarification and decision.clarifying_question:
         # 그래프를 멈추고 사용자 답을 받는다. checkpointer 가 있어야 동작한다.
         logger.info("재질문: %s", decision.clarifying_question)
         answer = interrupt({"clarifying_question": decision.clarifying_question})
-        state.clarification = str(answer)
+        update["clarification"] = str(answer)
 
-    return state
+    return update

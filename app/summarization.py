@@ -17,8 +17,16 @@ from langchain.agents.middleware import SummarizationMiddleware
 
 from models import get_model
 
-DEFAULT_TRIGGER_TOKENS = 8000
-DEFAULT_KEEP_MESSAGES = 20
+# 임계치를 낮게 잡으면 조사 도중에 요약이 끼어들어 도구 결과가 날아간다.
+#
+# 실측: 옵시디언 MOC 노트 1개 vault_read 가 ~852 토큰. 처음에 8000 으로 뒀더니
+# 노트 9~10개만 읽어도 트리거되어, 도메인 에이전트가 "대화 맥락 유실로 조사
+# 결과가 반환되지 않았다"고 답하는 일이 생겼다.
+#
+# 모델 컨텍스트가 1M 이므로 요약은 "폭주 방지용 안전장치"로만 쓴다.
+# 정상적인 조사 루프에서는 발동하지 않아야 한다.
+DEFAULT_TRIGGER_TOKENS = 120_000
+DEFAULT_KEEP_MESSAGES = 40
 
 
 def build_summarizer() -> SummarizationMiddleware:
