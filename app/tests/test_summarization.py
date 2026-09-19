@@ -1,7 +1,7 @@
 def test_summarizer_is_configured():
     from langchain.agents.middleware import SummarizationMiddleware
 
-    from summarization import build_summarizer
+    from models import build_summarizer
 
     assert isinstance(build_summarizer(), SummarizationMiddleware)
 

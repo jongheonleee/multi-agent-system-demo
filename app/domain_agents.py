@@ -18,7 +18,7 @@ from langchain_core.runnables import RunnableConfig
 
 from async_utils import run_coro
 from complex_discusion_topic_agent import vector_search_tool
-from models import get_model
+from models import build_summarizer, get_model
 from obsidian_tools import MOC_ENTRYPOINTS, MOC_HUB, get_obsidian_tools
 from state import DomainAnswer, DomainTaskState
 
@@ -89,8 +89,6 @@ def build_domain_agent(domain: str):
 
     MCP 연결 비용이 있으므로 캐시한다.
     """
-    from summarization import build_summarizer
-
     obsidian = get_obsidian_tools()
     tools = [vector_search_tool, *obsidian] if domain == "ai" else list(obsidian)
 

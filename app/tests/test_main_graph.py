@@ -58,15 +58,14 @@ def test_nodes_return_partial_dicts_not_full_state():
     import inspect
 
     import main_agent
-    import orchestrator
-
+    
     nodes = [
         main_agent.decompose_node,
         main_agent.merge_node,
         main_agent.general_it_node,
         main_agent.general_node,
         main_agent.finalize_node,
-        orchestrator.orchestrate,
+        main_agent.orchestrate,
     ]
     for fn in nodes:
         src = inspect.getsource(fn)
