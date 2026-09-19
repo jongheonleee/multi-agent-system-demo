@@ -112,7 +112,61 @@ def merge(question: str, answers: list[DomainAnswer]) -> str:
 
     chain = MERGE_PROMPT | get_model("judge")
     try:
-        return chain.invoke({"question": question, "answers": _format_answers(answers)}).text
+        merged = chain.invoke({"question": question, "answers": _format_answers(answers)}).text
     except Exception as e:
         logger.error("병합 실패, 원본을 이어붙입니다: %s", e)
         return _format_answers(answers)
+
+    return _guard(merged, answers)
+
+
+GUARDRAIL_THRESHOLD = 0.8
+
+FIX_PROMPT = ChatPromptTemplate.from_template(
+    """아래 답변에서 출처가 뒷받침하지 않는 문장을 제거하거나 완화해 다시 쓰세요.
+내용을 새로 추가하지 말고, 근거가 약한 부분만 손보세요.
+
+> 검증 결과
+{report}
+
+> 답변
+{merged}
+"""
+)
+
+
+def _guard(merged: str, answers: list[DomainAnswer]) -> str:
+    """병합 답변이 도메인 근거를 벗어나지 않았는지 1회 검증한다.
+
+    기준 미달이면 1회만 재작성한다. 재작성을 반복하면 비용만 늘고 품질은
+    수렴하지 않는다.
+    """
+    from rag_tools import fact_check_tool
+
+    context = "\n\n".join(a.answer for a in answers)
+    try:
+        report = fact_check_tool.invoke({"text": merged, "context": context})
+    except Exception as e:
+        logger.warning("guardrail 검증 실패, 원본을 반환합니다: %s", e)
+        return merged
+
+    score = report.get("overall_accuracy", 1.0)
+    if score >= GUARDRAIL_THRESHOLD:
+        logger.info("guardrail 통과 (%.2f)", score)
+        return merged
+
+    logger.info("guardrail 미달(%.2f), 1회 재작성합니다", score)
+    try:
+        return (
+            (FIX_PROMPT | get_model("judge"))
+            .invoke(
+                {
+                    "report": report.get("overall_accuracy_comment", ""),
+                    "merged": merged,
+                }
+            )
+            .text
+        )
+    except Exception as e:
+        logger.warning("재작성 실패, 원본을 반환합니다: %s", e)
+        return merged

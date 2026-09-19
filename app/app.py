@@ -137,20 +137,14 @@ st.markdown(CSS, unsafe_allow_html=True)
 
 
 @st.cache_resource
-def load_graphs():
-    from complex_discusion_topic_agent import complex_topic_graph
-    from general_it_trend_topic_agent import general_it_trend_graph
+def load_graph():
     from langgraph.checkpoint.memory import InMemorySaver
     from main_agent import build_main_graph
 
     # interrupt(재질문)는 checkpointer 없이는 동작하지 않는다.
     # @st.cache_resource 가 프로세스 수명 동안 유지하므로 rerun 사이에도 상태가 남는다.
     # 앱을 재시작하면 진행 중이던 대화는 사라진다(토이프로젝트 범위에서 허용).
-    return {
-        "자동 라우팅": build_main_graph(checkpointer=InMemorySaver()),
-        "논문 RAG (Pinecone)": complex_topic_graph,
-        "웹 검색 (Serper)": general_it_trend_graph,
-    }
+    return build_main_graph(checkpointer=InMemorySaver())
 
 
 @st.cache_resource
@@ -195,7 +189,7 @@ def submit(prompt: str) -> None:
     st.rerun()
 
 
-graphs = load_graphs()
+graph = load_graph()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -211,12 +205,8 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    st.markdown('<div class="section-label">에이전트</div>', unsafe_allow_html=True)
-    agent_name = st.radio(
-        "에이전트 선택",
-        list(graphs.keys()),
-        label_visibility="collapsed",
-    )
+    st.markdown('<div class="section-label">구성</div>', unsafe_allow_html=True)
+    st.caption("Orchestrator → 판단 Agent → 도메인 3종 병렬 → 병합")
 
     st.markdown('<div class="section-label">표시</div>', unsafe_allow_html=True)
     show_steps = st.toggle("도구 호출 과정", value=True)
@@ -276,12 +266,12 @@ if "run_prompt" in st.session_state:
 
         # Langfuse: 같은 채팅 세션의 질문들을 하나의 session으로 묶어서 기록
         config = {
-            "run_name": agent_name,
+            "run_name": "main_agent",
             # checkpointer 를 쓰면 thread_id 가 필수다.
             "configurable": {"thread_id": st.session_state.session_id},
             "metadata": {
                 "langfuse_session_id": st.session_state.session_id,
-                "langfuse_tags": ["streamlit", graphs[agent_name].name],
+                "langfuse_tags": ["streamlit", graph.name],
             },
         }
         langfuse_handler = get_langfuse_handler()
@@ -298,7 +288,7 @@ if "run_prompt" in st.session_state:
 
         try:
             # subgraphs=True 로 내부 ReAct 에이전트의 model/tools 단계까지 스트리밍
-            for namespace, update in graphs[agent_name].stream(
+            for namespace, update in graph.stream(
                 graph_input,
                 config=config,
                 stream_mode="updates",

@@ -17,7 +17,7 @@ from langchain_core.messages import AIMessage, HumanMessage, filter_messages
 from langchain_core.runnables import RunnableConfig
 
 from async_utils import run_coro
-from complex_discusion_topic_agent import vector_search_tool
+from rag_tools import vector_search_tool
 from models import build_summarizer, get_model
 from obsidian_tools import MOC_ENTRYPOINTS, MOC_HUB, get_obsidian_tools
 from state import DomainAnswer, DomainTaskState
