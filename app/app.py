@@ -14,6 +14,7 @@ import uuid
 import streamlit as st
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.types import Command
 
 load_dotenv()
 
@@ -139,10 +140,14 @@ st.markdown(CSS, unsafe_allow_html=True)
 def load_graphs():
     from complex_discusion_topic_agent import complex_topic_graph
     from general_it_trend_topic_agent import general_it_trend_graph
-    from main_agent import main_graph
+    from langgraph.checkpoint.memory import InMemorySaver
+    from main_agent import build_main_graph
 
+    # interrupt(재질문)는 checkpointer 없이는 동작하지 않는다.
+    # @st.cache_resource 가 프로세스 수명 동안 유지하므로 rerun 사이에도 상태가 남는다.
+    # 앱을 재시작하면 진행 중이던 대화는 사라진다(토이프로젝트 범위에서 허용).
     return {
-        "자동 라우팅": main_graph,
+        "자동 라우팅": build_main_graph(checkpointer=InMemorySaver()),
         "논문 RAG (Pinecone)": complex_topic_graph,
         "웹 검색 (Serper)": general_it_trend_graph,
     }
@@ -196,6 +201,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
+if "pending_clarification" not in st.session_state:
+    st.session_state.pending_clarification = None
 
 # ---------------- Sidebar ----------------
 with st.sidebar:
@@ -218,6 +225,9 @@ with st.sidebar:
     if st.button("대화 초기화", use_container_width=True):
         st.session_state.messages = []
         st.session_state.pop("run_prompt", None)
+        st.session_state.pop("resume_value", None)
+        st.session_state.pending_clarification = None
+        # thread_id 가 바뀌어야 checkpointer 의 이전 대화와 섞이지 않는다.
         st.session_state.session_id = str(uuid.uuid4())
         st.rerun()
 
@@ -267,6 +277,8 @@ if "run_prompt" in st.session_state:
         # Langfuse: 같은 채팅 세션의 질문들을 하나의 session으로 묶어서 기록
         config = {
             "run_name": agent_name,
+            # checkpointer 를 쓰면 thread_id 가 필수다.
+            "configurable": {"thread_id": st.session_state.session_id},
             "metadata": {
                 "langfuse_session_id": st.session_state.session_id,
                 "langfuse_tags": ["streamlit", graphs[agent_name].name],
@@ -276,14 +288,30 @@ if "run_prompt" in st.session_state:
         if langfuse_handler:
             config["callbacks"] = [langfuse_handler]
 
+        # 재질문에 답한 경우엔 새 질문이 아니라 멈춘 지점부터 재개한다.
+        resume_value = st.session_state.pop("resume_value", None)
+        graph_input = (
+            Command(resume=resume_value)
+            if resume_value is not None
+            else {"messages": history, "question": prompt}
+        )
+
         try:
             # subgraphs=True 로 내부 ReAct 에이전트의 model/tools 단계까지 스트리밍
             for namespace, update in graphs[agent_name].stream(
-                {"messages": history, "question": prompt},
+                graph_input,
                 config=config,
                 stream_mode="updates",
                 subgraphs=True,
             ):
+                # Orchestrator 가 모호하다고 판단하면 여기서 멈춘다.
+                if "__interrupt__" in update:
+                    payload = update["__interrupt__"][0].value
+                    st.session_state.pending_clarification = payload.get(
+                        "clarifying_question", "추가 정보가 필요합니다."
+                    )
+                    break
+
                 for node_update in update.values():
                     if not node_update:
                         continue
@@ -308,9 +336,21 @@ if "run_prompt" in st.session_state:
                 status.update(label="오류 발생", state="error")
             answer = f"⚠️ 오류가 발생했습니다: `{e}`"
 
+        if st.session_state.pending_clarification:
+            # 아직 답변이 없다. 되묻고 사용자의 답을 기다린다.
+            answer = f"**확인이 필요합니다** — {st.session_state.pending_clarification}"
+
         st.markdown(answer or "_(응답이 비어 있습니다)_")
 
     st.session_state.messages.append({"role": "assistant", "content": answer})
 
 if typed:
-    submit(typed)
+    if st.session_state.pending_clarification:
+        # 재질문에 대한 답. 새 질문이 아니라 멈춘 지점을 재개한다.
+        st.session_state.pending_clarification = None
+        st.session_state.resume_value = typed
+        st.session_state.messages.append({"role": "user", "content": typed})
+        st.session_state.run_prompt = typed
+        st.rerun()
+    else:
+        submit(typed)
