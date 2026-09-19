@@ -43,3 +43,43 @@ def test_guard_passes_grounded_answer():
     merged = "Pinecone 에 문서를 색인하고 Nginx 를 앞단에 둔다."
     out = _guard(merged, answers)
     assert out  # 통과하든 재작성되든 문자열이 나와야 한다
+
+
+def test_verify_failure_does_not_trigger_rewrite(monkeypatch):
+    """검증 실패(모델 응답 잘림 등)는 재작성 사유가 아니다.
+
+    fact_check 가 max_tokens 에 걸려 파싱 실패하면 0.0 을 반환하는데, 이걸
+    "부정확한 답변"으로 오인하면 멀쩡한 답변을 재작성시킨다.
+    """
+    import judge_agent
+    import rag_tools
+    from state import DomainAnswer
+
+    class FakeTool:
+        """StructuredTool 은 pydantic 모델이라 메서드를 못 바꾼다. 통째로 교체한다."""
+
+        @staticmethod
+        def invoke(_args):
+            return {
+                "sentences": [],
+                "overall_accuracy": 0.0,
+                "overall_accuracy_comment": (
+                    f"{rag_tools.VERIFY_FAILED_COMMENT_PREFIX} 응답이 잘림"
+                ),
+            }
+
+    monkeypatch.setattr(rag_tools, "fact_check_tool", FakeTool)
+
+    original = "원본 병합 답변"
+    out = judge_agent._guard(original, [DomainAnswer(domain="ai", question="q", answer="a")])
+    assert out == original, "검증 불가일 때는 원본을 그대로 유지해야 합니다"
+
+
+def test_fact_check_uses_larger_max_tokens():
+    import inspect
+
+    import rag_tools
+
+    # @tool 로 감싸져 있으므로 원본 함수(.func)에서 소스를 읽는다.
+    src = inspect.getsource(rag_tools.fact_check_tool.func)
+    assert "max_tokens=16000" in src

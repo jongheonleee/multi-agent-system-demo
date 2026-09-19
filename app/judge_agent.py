@@ -141,13 +141,19 @@ def _guard(merged: str, answers: list[DomainAnswer]) -> str:
     기준 미달이면 1회만 재작성한다. 재작성을 반복하면 비용만 늘고 품질은
     수렴하지 않는다.
     """
-    from rag_tools import fact_check_tool
+    from rag_tools import VERIFY_FAILED_COMMENT_PREFIX, fact_check_tool
 
     context = "\n\n".join(a.answer for a in answers)
     try:
         report = fact_check_tool.invoke({"text": merged, "context": context})
     except Exception as e:
         logger.warning("guardrail 검증 실패, 원본을 반환합니다: %s", e)
+        return merged
+
+    comment = report.get("overall_accuracy_comment", "")
+    if comment.startswith(VERIFY_FAILED_COMMENT_PREFIX):
+        # 검증 자체가 안 된 것이지 답변이 틀린 게 아니다. 재작성하면 안 된다.
+        logger.warning("guardrail 검증 불가, 원본을 유지합니다: %s", comment)
         return merged
 
     score = report.get("overall_accuracy", 1.0)

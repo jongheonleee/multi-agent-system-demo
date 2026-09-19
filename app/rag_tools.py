@@ -92,6 +92,12 @@ class FactCheckResult(BaseModel):
     overall_accuracy_comment: str = Field(..., description="전체 정확도에 대한 설명")
 
 
+# 검증 자체가 불가능했음을 나타내는 플래그. 모델 응답이 잘렸거나 출처가 없을 때다.
+# 이걸 정확도 0.0 과 구분하지 않으면, 검증 실패가 "부정확한 답변"으로 오인되어
+# 멀쩡한 답변을 재작성시킨다.
+VERIFY_FAILED_COMMENT_PREFIX = "[검증불가]"
+
+
 FACT_CHECK_PROMPT = ChatPromptTemplate.from_template(
     """> 역할
 - 1. 당신은 꼼꼼한 팩트 체커 AI입니다.
@@ -130,11 +136,13 @@ def fact_check_tool(text: str, context: str | None = None) -> dict:
         return FactCheckResult(
             sentences=[],
             overall_accuracy=0.0,
-            overall_accuracy_comment="출처 문서가 제공되지 않아 검증할 수 없습니다.",
+            overall_accuracy_comment=f"{VERIFY_FAILED_COMMENT_PREFIX} 출처 문서가 제공되지 않았습니다.",
         ).model_dump()
 
     try:
-        chain = FACT_CHECK_PROMPT | get_model("judge").with_structured_output(FactCheckResult)
+        # 문장마다 판정을 내므로 출력이 길다. 기본 4096 이면 잘려서 파싱이 실패한다.
+        model = get_model("judge", max_tokens=16000)
+        chain = FACT_CHECK_PROMPT | model.with_structured_output(FactCheckResult)
         result = chain.invoke({"answer": text, "context": context})
         return result.model_dump()
 
@@ -151,5 +159,5 @@ def fact_check_tool(text: str, context: str | None = None) -> dict:
                 )
             ],
             overall_accuracy=0.0,
-            overall_accuracy_comment="사실 확인 중 오류가 발생했습니다.",
+            overall_accuracy_comment=f"{VERIFY_FAILED_COMMENT_PREFIX} 사실 확인 중 오류: {e!s}",
         ).model_dump()
