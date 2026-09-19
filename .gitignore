@@ -1,7 +1,30 @@
+# ── 파이썬 ────────────────────────────────────────
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# ── 시크릿 ────────────────────────────────────────
+# .env 는 어느 디렉터리에 있든 제외한다 (app/.env, infra/.env, app2/.env ...)
 .env
-infra/.env
-data/*.json
+.env.*
+!.env.example
+*.key
+*.pem
+secrets.toml
 .streamlit/secrets.toml
+
+# ── 대용량 / 저작권 자료 ──────────────────────────
+# 논문 PDF 는 저작권이 있고 repo 를 12MB 불린다.
+# 색인 파이프라인만 공개하고 원문은 각자 받게 한다.
+data/*.pdf
+data/*.json
+
+# ── 개인 정보가 담긴 캡처 ─────────────────────────
+# Claude 계정 화면 캡처(대화 제목·계정명 노출). 공개 금지.
+image.png
+*.local.png
+
+# ── 로그 ─────────────────────────────────────────
+*.log
+err*.log
