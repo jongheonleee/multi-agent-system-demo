@@ -1,0 +1,33 @@
+# Claude 다크 UI 톤에 맞춘 테마.
+# 색상은 대부분 여기서 정의하고, app.py 의 CSS 는 레이아웃/간격만 다룬다.
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"
+
+primaryColor = "#d97757"              # 코랄 액센트
+backgroundColor = "#262624"           # 본문 배경 (웜 그레이)
+secondaryBackgroundColor = "#302f2c"  # 카드 / 입력창
+textColor = "#f5f4ef"
+linkColor = "#d97757"
+borderColor = "#3d3a36"
+codeBackgroundColor = "#1f1e1d"
+codeTextColor = "#c8c5bd"
+
+baseRadius = "0.75rem"
+buttonRadius = "0.625rem"
+showWidgetBorder = true
+showSidebarBorder = true
+baseFontSize = 15
+
+# 웹폰트 의존 없이 OS 기본 한글 폰트로 폴백한다.
+font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Pretendard, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif"
+headingFont = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Pretendard, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif"
+codeFont = "'Cascadia Mono', 'JetBrains Mono', Consolas, 'D2Coding', monospace"
+
+[theme.sidebar]
+backgroundColor = "#1f1e1d"
+secondaryBackgroundColor = "#2b2a27"
+borderColor = "#343230"

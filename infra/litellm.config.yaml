@@ -35,7 +35,15 @@ general_settings:
 
 litellm_settings:
   drop_params: true
-  # 게이트웨이를 통과한 호출을 Langfuse 로도 보내려면 아래 주석을 풀 것.
-  # 이때 LANGFUSE_HOST 는 컨테이너 내부 주소(http://langfuse-web:3000)여야 한다.
-  # success_callback: ["langfuse"]
-  # failure_callback: ["langfuse"]
+
+  # 게이트웨이를 통과한 모든 호출을 Langfuse 로 보낸다.
+  #
+  # 키는 compose 의 env_file(../app/.env)이 넣어주고, LANGFUSE_HOST 는
+  # compose 의 environment 에서 컨테이너 내부 주소로 덮어쓴다.
+  # (app/.env 의 http://localhost:3300 은 컨테이너 안에서 닿지 않는다)
+  #
+  # 참고: app 은 CallbackHandler 로 이미 직접 트레이싱한다. 여기를 켜면
+  # 게이트웨이 관점의 기록이 추가로 쌓인다 — 앱을 거치지 않는 호출까지
+  # 한곳에서 보려는 것이므로 중복이 아니라 계층이 다른 기록이다.
+  success_callback: ["langfuse"]
+  failure_callback: ["langfuse"]

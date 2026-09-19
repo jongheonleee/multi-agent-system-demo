@@ -99,6 +99,19 @@ finalize ─▶ 답변 (+ Langfuse 트레이싱)
 `get_model()` 은 정의된 role(`orchestrator`/`judge`/`domain`/`trend`/`default`)만 받는다.
 `"Opus"` 같은 이름을 넘기면 조용히 기본값으로 떨어지므로 가드 테스트로 막아둔다.
 
+## 관측 (Langfuse)
+
+`http://localhost:3300` 에서 두 계층의 기록을 볼 수 있다.
+
+| 계층 | 트레이스 이름 | 범위 |
+|---|---|---|
+| 앱 | `main_agent` | 그래프 노드와 병렬 도메인 스팬(`domain:server_infra` 등)까지 |
+| 게이트웨이 | `litellm-acompletion` | LiteLLM 을 통과한 **모든** LLM 호출 (앱 밖 호출 포함) |
+
+게이트웨이 계층은 `infra/litellm.config.yaml` 의 `success_callback: ["langfuse"]` 로 켠다.
+중복이 아니라 관점이 다르다 — 앱 트레이스는 에이전트 흐름을, 게이트웨이 트레이스는
+모델별 호출량·비용을 본다.
+
 ## 테스트
 
 ```powershell
