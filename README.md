@@ -1,105 +1,17 @@
-# multi-agent-system-demo
+# 안녕, 나의 학습 도우미!
 
-IT 질문을 도메인별로 분해해 전문 에이전트들이 **병렬로** 조사하고, 판단 에이전트가
-하나의 답으로 합치는 멀티 에이전트 시스템. 근거는 옵시디언 볼트(내부 문서),
-Pinecone(논문), 웹 검색에서 가져온다.
-
-같은 시스템을 두 가지로 구현했다.
-
-| 디렉터리 | 구현 |
-|---|---|
-| [`app/`](app/) | **LangGraph** — 그래프로 분해·병렬·병합을 직접 배선 |
-| [`app2/`](app2/) | **Claude Agent SDK** — 서브에이전트 위임으로 같은 구조를 표현 |
-
----
-
-## 멀티 에이전트 아키텍처
-
-![멀티 에이전트 아키텍처](docs/images/multi-agent-architecture.png)
-
-질문이 들어오면 Orchestrator 가 의도를 분류하고, 판단 Agent 가 도메인별 서브 질문으로
-쪼갠다. 세 도메인 에이전트가 각자의 근거를 병렬로 찾고, 판단 Agent 가 다시 합친다.
-
-| 에이전트 | 모델 | 역할 | 참조 소스 |
-|---|---|---|---|
-| Orchestrator | Opus 5 | 의도 분류, 모호하면 되묻기(HITL) | — |
-| 판단 Agent | Opus 5 | 질문 분해 · 결과 병합 · 품질 검사 | — |
-| AI Agent | Sonnet 5 | LLM/RAG/에이전트/벡터검색 | Pinecone 논문 + 옵시디언 |
-| 서버·인프라 Agent | Sonnet 5 | 배포·k8s·네트워크·모니터링 | 옵시디언 (MCP) |
-| 시스템 설계 Agent | Sonnet 5 | 서비스 경계·API·데이터 모델링 | 옵시디언 (MCP) |
-| IT 트렌드 Agent | Sonnet 5 | 단순 개념·최신 트렌드 | Serper 웹 검색 |
-
-> **구현 현황** — 그림의 구성요소 중 Safety Filter, Example Selector, 장기 기억은
-> 아직 설계 단계다. Memory 는 대화 요약(`SummarizationMiddleware`)까지만 구현되어 있다.
-> 벡터DB 는 MCP 를 거치지 않고 직접 연결한다.
-
-## 시스템 아키텍처
-
-![시스템 아키텍처](docs/images/system-architecture.png)
-
-모든 LLM 호출은 **LiteLLM 게이트웨이를 경유**한다. 모델 라우팅과 비용 집계를 한곳에서
-보기 위해서다. 관측은 두 계층으로 쌓인다.
-
-| 계층 | 트레이스 | 보이는 것 |
-|---|---|---|
-| 앱 | `main_agent` | 그래프 노드와 병렬 도메인 스팬(`domain:server_infra` 등) |
-| 게이트웨이 | `litellm-acompletion` | 게이트웨이를 통과한 **모든** 호출 (앱 밖 호출 포함) |
-
-인프라는 Docker Compose 로 띄운다 — LiteLLM(`:4000`), Langfuse v3(`:3300`,
-web·worker·postgres·clickhouse·redis·minio).
-
-## 워크플로우
+### 워크 플로우 정의
 
 ![워크플로우](docs/images/workflow.png)
 
-의도 분류에서 두 갈래로 나뉜다.
+### 에이전트 아키텍처
 
-- **복합 질문** — 서브 질문 분해 → 도메인별 병렬 실행 → 결과 취합 → 품질 검사(Recheck)
-- **단순 질문** — 웹 서칭 → 팩트 체크
+![에이전트 아키텍처](docs/images/multi-agent-architecture.png)
 
-품질 검사는 병합 답변을 도메인 근거와 대조해 `overall_accuracy < 0.8` 이면 1회
-재작성한다. 검증 자체가 실패한 경우(응답 잘림 등)는 재작성하지 않고 원본을 유지한다.
+### 시스템 아키텍처
 
----
+![시스템 아키텍처](docs/images/system-architecture.png)
 
-## 실행
-
-### 1. 인프라
-
-```bash
-cd infra
-cp .env.example .env      # 값 채우기 (시크릿 생성법은 파일 주석 참고)
-docker compose up -d
-```
-
-### 2. 앱
-
-```bash
-cd app
-cp .env.example .env      # API 키 채우기
-..\.venv\Scripts\python.exe -m streamlit run app.py
-```
-
-전제조건은 [`app/README.md`](app/README.md) 참고. 옵시디언 볼트를 읽으려면
-**Obsidian 앱이 실행 중**이어야 하고 `Local REST API with MCP` 플러그인이 필요하다.
-
-### 3. 테스트
-
-```bash
-..\.venv\Scripts\python.exe -m pytest -q        # 외부 호출 없음
-..\.venv\Scripts\python.exe -m pytest -q -m llm # 실제 API 호출 (비용 발생)
-```
-
-## 문서
-
-| 문서 | 내용 |
-|---|---|
-| [`app/README.md`](app/README.md) | LangGraph 구현 — 실행법, 환경변수, 주의사항 |
-| [`app2/README.md`](app2/README.md) | Claude Agent SDK 구현 |
-| [`docs/superpowers/specs/`](docs/superpowers/specs/) | 설계 문서 |
-| [`docs/superpowers/plans/`](docs/superpowers/plans/) | 구현 계획 |
-
-## 주의
-
-옵시디언 볼트는 **읽기 전용**이다. MCP 플러그인이 쓰기·삭제 도구까지 노출하지만
-화이트리스트로 읽기 도구 5종만 에이전트에 전달한다. 테스트로 고정되어 있다.
+### 설명
+> - 회사 발표 자료
+> - 해당 PPT 참고할 것
