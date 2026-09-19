@@ -1,5 +1,8 @@
 # 로컬 개발 스택
-#   LiteLLM(API Gateway) / Langfuse v3(LLMOps) / Qdrant(VectorDB)
+#   LiteLLM(API Gateway) / Langfuse v3(LLMOps)
+#
+# Qdrant 는 제거했다. 벡터 DB 는 Pinecone(클라우드)을 쓰고 있어서
+# 코드 참조가 0건이었고 컬렉션도 비어 있었다. 전환할 때 다시 추가할 것.
 #
 # 실행:  cd infra && docker compose up -d
 # 중지:  docker compose down          (데이터 유지)
@@ -52,7 +55,7 @@ x-langfuse-env: &langfuse-common-env
   REDIS_AUTH: ${REDIS_PASSWORD:?infra/.env 에 REDIS_PASSWORD 를 설정할 것}
   REDIS_TLS_ENABLED: "false"
 
-### 컨테이너 정의 => LiteLLM(API Gateway), LangFuse(LLMOps), Qdrant(VectorDB)
+### 컨테이너 정의 => LiteLLM(API Gateway), LangFuse(LLMOps)
 services:
 
   ## litellm ─ 모든 LLM 호출을 통과시키는 게이트웨이
@@ -243,17 +246,6 @@ services:
       start_period: 1s
     networks: [toynet]
 
-  ## qdrant ─ 현재 코드는 Pinecone 을 쓰고 있으나 전환 대비로 올려둔다.
-  qdrant:
-    image: docker.io/qdrant/qdrant:v1.12.4
-    restart: always
-    ports:
-      - "6333:6333"   # REST / 대시보드 http://localhost:6333/dashboard
-      - "6334:6334"   # gRPC
-    volumes:
-      - qdrant_data:/qdrant/storage
-    networks: [toynet]
-
 ### 볼륨 정의
 volumes:
   langfuse_postgres_data:
@@ -267,8 +259,6 @@ volumes:
   langfuse_minio_data:
     driver: local
   litellm_postgres_data:
-    driver: local
-  qdrant_data:
     driver: local
 
 ### 네트워크 정의
