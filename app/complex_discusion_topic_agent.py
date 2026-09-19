@@ -41,7 +41,7 @@ def get_multiple_queries(query: str) -> list[str]:
         """
     )
 
-    query_chain = query_prompt | get_model("claude") | (lambda x: x.text.split("\n"))
+    query_chain = query_prompt | get_model("domain") | (lambda x: x.text.split("\n"))
     similar_queries = query_chain.invoke({ "question": query})
     similar_queries = [q.strip() for q in similar_queries if q.strip()][:2]
     all_queries = [query] + similar_queries
@@ -133,7 +133,7 @@ def fact_check_tool(text: str, context: Sequence[Document] | None = None) -> dic
         if context:
             context_str = context 
 
-        llm_with_tool = get_model("Opus").with_structured_output(FactCheckResult)
+        llm_with_tool = get_model("judge").with_structured_output(FactCheckResult)
 
         _fact_check_chain = fact_check_prompt | llm_with_tool
         result = _fact_check_chain.invoke({
@@ -269,7 +269,7 @@ system_prompt = """
 
 tools = [get_multiple_queries, vector_search_tool, fact_check_tool]
 agent_executor = create_agent(
-    model = get_model("Sonnet"),
+    model = get_model("domain"),
     tools = tools, 
     system_prompt = system_prompt,
     name = "complex_discusion_topic_react_agent",

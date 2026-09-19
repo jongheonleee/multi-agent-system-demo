@@ -13,7 +13,7 @@ from langchain_community.utilities import GoogleSerperAPIWrapper
 from langchain_community.document_loaders import WebBaseLoader
 
 from state import GeneralITTopicState 
-from models import get_model, get_original_reranker 
+from models import build_summarizer, get_model, get_original_reranker 
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ def expand_query(query: str) -> List[str]:
 
 """
     prompt = ChatPromptTemplate.from_template(query_expansion_template)
-    chain = prompt | get_model("Sonnet") | (lambda x: x.text.split("\n"))
+    chain = prompt | get_model("trend") | (lambda x: x.text.split("\n"))
 
     # 사용자 입력 질문에 대해 유사한 질문으로 확장 
     similar_queries = chain.invoke({"question": query})
@@ -89,7 +89,7 @@ def fetch_webpage_content(urls: List[str]) -> List[Document]:
     docs = []
 
     for doc in loader.lazy_load():
-        result = get_model("Sonnet").invoke(
+        result = get_model("trend").invoke(
             f"## 임 문서를 핵심만 남겨서 200자 내외로 요약해줘, \n\n ##Document: \n{doc.page_content}"
         )
 
@@ -176,9 +176,11 @@ tools = [
 ]
 
 agent_executor = create_agent(
-    model = get_model("Sonnet"),
+    # "Sonnet" 은 role 이름이 아니라 unknown 으로 떨어진다. 명시적으로 trend role 사용.
+    model = get_model("trend"),
     tools = tools,
     system_prompt = system_prompt,
+    middleware = [build_summarizer()],
     name = "general_it_trend_react_agent",
 )
 
