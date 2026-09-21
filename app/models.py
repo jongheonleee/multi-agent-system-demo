@@ -1,43 +1,49 @@
 import os
 
-# 역할별 기본 모델. 환경변수 AGENT_<ROLE>_MODEL 로 덮어쓸 수 있다.
+# 각 에이전트 이름별 할당되는 모델명 기록
 _ROLE_DEFAULTS = {
-    "orchestrator": "claude-opus-5",
-    "judge": "claude-opus-5",
-    "domain": "claude-sonnet-5",
-    "trend": "claude-sonnet-5",
-    "default": "claude-sonnet-5",
+    "orchestrator": "claude-opus-5",  ### 오케스트레이터: OPUS5
+    "judge": "claude-opus-5",         ### 판단 에이전트: OPUS5
+    "domain": "claude-opus-5",        ### 도메인 에이전트(서버 및 인프라, 시스템 설계, AI): OPUS5
+    "trend": "claude-sonnet-5",       ### 트렌드 서치용 에이전트: Sonnet5 
+    "default": "claude-sonnet-5",     ### 그외의 Sonnet5
 }
 
-
+# 각 에이전트(이름)에 맞는 모델 ID 문자열 반환
+# 설정 파일에 모델 ID 문자열에 맞는 모델명이 정의되어 있음 
 def resolve_model_id(role: str = "default") -> str:
-    """역할 이름을 실제 모델 ID 로 해석한다."""
-    override = os.getenv(f"AGENT_{role.upper()}_MODEL")
-    if override:
-        return override
-    return _ROLE_DEFAULTS.get(role, _ROLE_DEFAULTS["default"])
+
+    """
+    - 역할 이름을 실제 모델 ID 로 해석한다.
+    """
+
+    override = os.getenv(f"AGENT_{role.upper()}_MODEL")    
+    return override or _ROLE_DEFAULTS.get(role, _ROLE_DEFAULTS["default"])
 
 
 def get_model(role: str = "default", **overrides):
-    """역할에 맞는 LLM 인스턴스를 반환한다.
-
-    LITELLM_BASE_URL 이 설정되어 있으면 게이트웨이를 경유한다.
-    게이트웨이는 OpenAI 호환 API 를 노출하므로 ChatOpenAI 로 붙는다.
     """
-    kwargs = {"model": resolve_model_id(role), "max_tokens": 4096, **overrides}
+    - 역할에 맞는 LLM 인스턴스를 반환한다.
+    - LITELLM_BASE_URL 이 설정되어 있으면 게이트웨이를 경유한다.
+    - 게이트웨이는 OpenAI 호환 API 를 노출하므로 ChatOpenAI 로 붙는다.
+    """
+    from langchain_openai import ChatOpenAI
+    from langchain_anthropic import ChatAnthropic
+
+    kwargs = {
+        "model": resolve_model_id(role), 
+        "max_tokens": 4096, 
+        **overrides
+    }
 
     base_url = os.getenv("LITELLM_BASE_URL")
     if base_url:
-        from langchain_openai import ChatOpenAI
-
         return ChatOpenAI(
             base_url=f"{base_url.rstrip('/')}/v1",
             api_key=os.getenv("LITELLM_API_KEY", "sk-noop"),
             **kwargs,
         )
-
-    from langchain_anthropic import ChatAnthropic
-
+    
     return ChatAnthropic(**kwargs)
 
 
@@ -54,8 +60,9 @@ def get_embeddings():
 def get_original_reranker():
     """Cohere Rerank 모델 인스턴스를 반환."""
     from langchain_cohere import CohereRerank
-
-    return CohereRerank(model="rerank-multilingual-v3.0")
+    return CohereRerank(
+        model="rerank-multilingual-v3.0"
+    )
 
 
 # ---------------------------------------------------------------------------

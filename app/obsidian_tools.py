@@ -1,51 +1,37 @@
-"""옵시디언 볼트를 Local REST API with MCP 플러그인으로 읽는다.
-
-플러그인(Adam Coddington, obsidian-local-rest-api v5.1.0)이 MCP 서버를 내장하므로
-별도 브릿지 패키지가 필요 없다.
-
-전제조건: Obsidian 앱이 실행 중이어야 한다.
-
---------------------------------------------------------------------------
-볼트는 절대 읽기 전용이다.
-  플러그인은 쓰기/삭제/커맨드 실행 도구까지 16종을 노출하지만, 이 앱은
-  OBSIDIAN_TOOL_NAMES 화이트리스트에 있는 읽기 도구만 에이전트에 넘긴다.
-  블랙리스트가 아니라 화이트리스트여야 한다 — 플러그인이 새 쓰기 도구를
-  추가해도 자동으로 차단되도록.
---------------------------------------------------------------------------
+"""
+> - 옵시디언 MCP 접속 및 툴 로딩
 """
 from __future__ import annotations
-
 import logging
 import os
-
 from async_utils import run_coro
 
 logger = logging.getLogger(__name__)
 
+# 로컬 환경 옵시디언 URL, API KEY 
 OBSIDIAN_MCP_URL = os.getenv("OBSIDIAN_MCP_URL", "https://127.0.0.1:27124/mcp/")
 OBSIDIAN_API_KEY = os.getenv("OBSIDIAN_API_KEY", "")
 
 # 에이전트에 노출할 읽기 전용 도구. 이 목록에 없는 도구는 전달되지 않는다.
-# vault_write / vault_append / vault_patch / vault_delete / vault_move /
-# vault_copy / command_execute / open_file 은 의도적으로 제외한다.
 OBSIDIAN_TOOL_NAMES = (
-    "search_simple",
-    "search_query",
-    "vault_read",
-    "vault_list",
-    "vault_get_document_map",
+    "search_simple",            # Obsidian 내장 검색 엔진을 이용한 전문(full-text) 검색. 쿼리 문자열로 볼트 전체를 훑어 매칭된 파일명과 스코어링된 컨텍스트 스니펫(주변 텍스트)을 반환함
+    "search_query",             # JsonLogic 구조화 쿼리를 사용한 검색. frontmatter, 태그, 경로, 본문 등 노트 메타데이터를 조건으로 정교하게 필터링할 수 있음
+    "vault_read",               # 지정한 파일의 내용, frontmatter, 태그, stat(수정일 등 파일 정보)를 조회함 
+    "vault_list",               # 특정 디렉토리 안의 파일 / 하위 디렉토리 목록을 나열함 
+    "vault_get_document_map",   # 파일 안의 헤딩(heading) 구조, 블록 참조(block reference), frontmatter 필드 목록을 반환함. 즉, 파일 내부를 통째로 읽지 않고 "이 노트가 어떤 섹션들로 구성돼 있는지" 개략적인 틀에 대한 정보를 조회함 
 )
 
-# 볼트에는 기술 태그가 없다(태그 27개가 전부 농업/경제/공고문 계열).
-# 대신 #MOC 태그가 붙은 Map of Content 노트 33개가 도메인 허브 역할을 하므로
-# 이것을 진입점으로 쓴다. 아래 경로는 search_query 로 실제 조회해 확인한 값이다.
+# 나의 옵시디언 경로중 "04. 나의 성장기/02. 나의 CS 학습"에 CS 학습 내용이 문서로 정리되어 있음 
 _CS = "04. 나의 성장기/02. 나의 CS 학습"
 
-# 전체 기술 영역을 잇는 최상위 허브. 어느 도메인에서 출발해도 여기서 넓힐 수 있다.
+# 전체 기술 영역을 잇는 최상위 허브. 여기가 최초 진입점 
 MOC_HUB = f"{_CS}/기술 아키텍처 지도.md"
 
+# 서버 및 인프라, 시스템 설계, AI 영역에 대한 각각의 MOC 경로 정의 
+# MOC(Map of Content, 콘텐츠 지도): 내가 직접 정의한 각 노트 간 관계 정보. 지식 그래프 형태로 활용 가능함 
 MOC_ENTRYPOINTS = {
-    # 운영 중인 시스템을 돌리는 층
+
+    # 1. 서버 및 인프라 관련 MOC 모음 
     "server_infra": [
         f"{_CS}/00. 네트워크/네트워크 MOC.md",
         f"{_CS}/01. 운영체제(Linux)/운영체제 MOC.md",
@@ -58,7 +44,8 @@ MOC_ENTRYPOINTS = {
         f"{_CS}/12. IaC(Terraform)/IaC MOC.md",
         f"{_CS}/17. 리버스 프록시(Nginx)/리버스 프록시 MOC.md",
     ],
-    # 코드와 데이터의 구조를 정하는 층
+
+    # 2. 시스템 설계 관련 MOC 모음
     "system_design": [
         f"{_CS}/19. 시스템 아키텍처/시스템 아키텍처 MOC.md",
         f"{_CS}/13. 소프트웨어 아키텍처(Clean Architecture)/소프트웨어 아키텍처 MOC.md",
@@ -71,7 +58,9 @@ MOC_ENTRYPOINTS = {
         f"{_CS}/25. 그래프 데이터베이스(Neo4j)/그래프 데이터베이스 MOC.md",
         f"{_CS}/18. 스프링부트 & JPA/스프링부트 MOC.md",
     ],
-    # 모델과 그 주변. Pinecone 논문 검색과 함께 쓴다.
+
+
+    # 3. AI 관련 MOC 모음
     "ai": [
         f"{_CS}/26. RAG&AI Agent&Ontology/RAG & AI Agent MOC.md",
         f"{_CS}/20. AI Fundamental/AI MOC.md",
@@ -80,13 +69,14 @@ MOC_ENTRYPOINTS = {
 }
 
 
+# TLS 인증 비활성화 
 def _insecure_client(headers=None, timeout=None, auth=None):
-    """플러그인이 자체서명 인증서를 쓰므로 TLS 검증을 끈다.
 
+    """플러그인이 자체서명 인증서를 쓰므로 TLS 검증을 끈다.
     127.0.0.1 로컬 연결에만 쓰이므로 허용 가능하다.
     """
-    import httpx
 
+    import httpx
     return httpx.AsyncClient(
         headers=headers,
         timeout=timeout,
@@ -96,6 +86,8 @@ def _insecure_client(headers=None, timeout=None, auth=None):
     )
 
 
+# 옵시디언 MCP 연동 
+# - MCP 클라이언트가 서버에 연결하기 위한 설정 정보(connection config)
 def _connection() -> dict:
     return {
         "obsidian": {
@@ -107,31 +99,37 @@ def _connection() -> dict:
     }
 
 
+# 옵시디언 툴 로드
+# - _connection()으로 옵시디언 MCP 서버에 접속
+# - 그 서버가 제공하는 툴을 LangChain에서 쓸 수 있는 형태로 로딩함 
 async def _load() -> list:
     from langchain_mcp_adapters.client import MultiServerMCPClient
+    obsidianConnection = _connection()
+    obsidianMCPClient = MultiServerMCPClient(obsidianConnection)
+    return await obsidianMCPClient.get_tools()
 
-    return await MultiServerMCPClient(_connection()).get_tools()
 
-
+# 옵시디언에서 허용된 툴을 리스트 형식으로 반환 
 def get_obsidian_tools() -> list:
+
     """읽기 전용 옵시디언 도구를 반환한다.
 
     Obsidian 이 꺼져 있으면 연결이 실패한다. 그래프 전체를 죽이지 않고
     빈 리스트로 degrade 하며, 에이전트 프롬프트가 "조회 실패" 를 명시하도록 한다.
     """
+
     if not OBSIDIAN_API_KEY:
         logger.warning("OBSIDIAN_API_KEY 가 비어 있습니다. 옵시디언 도구를 건너뜁니다.")
         return []
 
     try:
-        # 이미 이벤트 루프가 도는 곳에서도 불릴 수 있으므로 run_coro 를 쓴다.
-        tools = run_coro(_load())
+        obsidianTools = _load()
+        tools = run_coro(obsidianTools)
     except Exception as e:
         logger.warning("옵시디언 MCP 연결 실패(Obsidian 이 실행 중인지 확인): %s", e)
         return []
 
-    allowed = [t for t in tools if t.name in OBSIDIAN_TOOL_NAMES]
-    dropped = [t.name for t in tools if t.name not in OBSIDIAN_TOOL_NAMES]
-    if dropped:
-        logger.info("읽기 전용 정책으로 제외한 도구: %s", ", ".join(sorted(dropped)))
-    return allowed
+    return [
+        tool for tool in tools 
+        if tool.name in OBSIDIAN_TOOL_NAMES
+    ]
