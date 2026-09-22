@@ -4,8 +4,9 @@ Streamlit 채팅 UI (Claude Agent SDK 버전)
 실행: streamlit run app.py   (반드시 app2/ 디렉터리 안에서)
 
 화면과 사용법은 app/ 과 같다. 내부 차이는 두 가지다.
-  - graph.stream(...) 대신 main_agent.stream_turn(...) 의 이벤트를 그린다.
-  - 대화 이어가기는 체크포인터(thread_id) 대신 Claude Code 세션(session_id resume)이 맡는다.
+  - graph.stream(...) 대신 AgentSession.send(...) 의 이벤트를 그린다.
+  - 대화 이어가기는 체크포인터(thread_id) 대신 상주하는 Claude Code 세션(client 1개)이 맡는다.
+  - 재질문은 AskUserQuestion. 세션이 question 에서 멈추면 답을 받아 answer()+resume() 으로 이어간다.
 
 색상/폰트는 .streamlit/config.toml 에서 정의한다.
 여기의 CSS 는 레이아웃·간격·위젯 형태만 다룬다.
@@ -26,8 +27,7 @@ for _candidate in (_HERE / ".env", _HERE.parent / "app" / ".env"):
         load_dotenv(_candidate)
         break
 
-from async_utils import iterate_in_thread  # noqa: E402  (load_dotenv 이후에 읽어야 한다)
-from main_agent import clarification_prompt, stream_turn  # noqa: E402
+from main_agent import new_session  # noqa: E402  (load_dotenv 이후에 읽어야 한다)
 
 st.set_page_config(
     page_title="IT Agent",
@@ -257,11 +257,18 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
-if "agent_session_id" not in st.session_state:
-    # Claude Code 세션 ID. 첫 턴이 끝나면 채워지고, 다음 턴부터 resume 에 쓴다.
-    st.session_state.agent_session_id = None
-if "pending_clarification" not in st.session_state:
-    st.session_state.pending_clarification = None
+if "agent" not in st.session_state:
+    # 채팅 세션당 Claude Code client 하나. 첫 질문에서 만든다.
+    st.session_state.agent = None
+if "pending_question" not in st.session_state:
+    # AskUserQuestion 이 기다리는 질문. 있으면 다음 입력은 새 질문이 아니라 그 답이다.
+    st.session_state.pending_question = None
+
+
+def agent_session():
+    if st.session_state.agent is None:
+        st.session_state.agent = new_session()
+    return st.session_state.agent
 
 # ---------------- Sidebar ----------------
 with st.sidebar:
@@ -271,7 +278,7 @@ with st.sidebar:
     )
 
     st.markdown('<div class="section-label">구성</div>', unsafe_allow_html=True)
-    st.caption("Orchestrator → 도메인 서브에이전트 병렬 → 병합 (Claude Agent SDK)")
+    st.caption("메인 에이전트 → 서브에이전트 자동 위임 · 병렬 → 병합 (Claude Agent SDK)")
 
     st.markdown('<div class="section-label">표시</div>', unsafe_allow_html=True)
     show_steps = st.toggle("도구 호출 과정", value=True)
@@ -280,10 +287,12 @@ with st.sidebar:
     if st.button("대화 초기화", use_container_width=True):
         st.session_state.messages = []
         st.session_state.pop("run_prompt", None)
-        st.session_state.pop("resume_value", None)
-        st.session_state.pending_clarification = None
-        # 세션을 끊어야 이전 대화와 섞이지 않는다.
-        st.session_state.agent_session_id = None
+        st.session_state.pop("pending_answer", None)
+        st.session_state.pending_question = None
+        # client 를 닫아야 이전 대화와 섞이지 않는다.
+        if st.session_state.agent is not None:
+            st.session_state.agent.close()
+            st.session_state.agent = None
         st.session_state.session_id = str(uuid.uuid4())
         st.rerun()
 
@@ -320,14 +329,12 @@ for m in st.session_state.messages:
 
 if "run_prompt" in st.session_state:
     prompt = st.session_state.pop("run_prompt")
+    # 재질문에 답한 경우: 새 턴이 아니라 기다리던 같은 턴을 이어간다.
+    pending_answer = st.session_state.pop("pending_answer", None)
 
     with st.chat_message("assistant"):
         status = st.status("생각하는 중...", expanded=show_steps) if show_steps else None
         answer = ""
-
-        # 재질문에 답한 경우엔 같은 세션에 사용자 추가 정보로 이어서 보낸다.
-        resume_value = st.session_state.pop("resume_value", None)
-        agent_prompt = clarification_prompt(resume_value) if resume_value is not None else prompt
 
         # Langfuse: 같은 채팅 세션의 질문들을 하나의 session 으로 묶어서 기록
         langfuse = get_langfuse()
@@ -336,7 +343,7 @@ if "run_prompt" in st.session_state:
         if langfuse:
             from langfuse import propagate_attributes
 
-            root_cm = langfuse.start_as_current_observation(name="main_agent", as_type="span", input=agent_prompt)
+            root_cm = langfuse.start_as_current_observation(name="main_agent", as_type="span", input=prompt)
             root = root_cm.__enter__()
             attrs_cm = propagate_attributes(
                 session_id=st.session_state.session_id, tags=["streamlit", "main_agent"], trace_name="main_agent"
@@ -345,9 +352,12 @@ if "run_prompt" in st.session_state:
             recorder = LangfuseTurn(langfuse, root)
 
         try:
-            # st.session_state 는 스크립트 스레드에서만 읽을 수 있다. 값을 먼저 꺼내 넘긴다.
-            agent_session_id = st.session_state.agent_session_id
-            events = iterate_in_thread(lambda: stream_turn(agent_prompt, agent_session_id))
+            session = agent_session()
+            if pending_answer is not None:
+                session.answer(pending_answer)
+                events = session.resume()
+            else:
+                events = session.send(prompt)
             for ev in events:
                 if recorder:
                     recorder.on_event(ev)
@@ -358,12 +368,11 @@ if "run_prompt" in st.session_state:
                 elif ev.kind == "tool_result" and status and ev.nested:
                     status.markdown(f"↳ {ev.name}")
                     status.code(truncate(to_text(ev.body)))
-                elif ev.kind == "clarification":
-                    # Orchestrator 가 모호하다고 판단하면 되묻고 멈춘다.
-                    st.session_state.pending_clarification = ev.body
+                elif ev.kind == "question":
+                    # 메인 에이전트가 AskUserQuestion 으로 되물었다. 턴은 답을 기다리며 멈춰 있다.
+                    st.session_state.pending_question = ev.body
                 elif ev.kind == "done":
                     answer = ev.body
-                    st.session_state.agent_session_id = ev.data.get("session_id")
                 elif ev.kind == "error":
                     raise RuntimeError(ev.body)
 
@@ -380,19 +389,22 @@ if "run_prompt" in st.session_state:
                 root_cm.__exit__(None, None, None)
                 langfuse.flush()
 
-        if st.session_state.pending_clarification:
+        if st.session_state.pending_question:
             # 아직 답변이 없다. 되묻고 사용자의 답을 기다린다.
-            answer = f"**확인이 필요합니다** — {st.session_state.pending_clarification}"
+            answer = f"**확인이 필요합니다** — {st.session_state.pending_question}"
+        elif st.session_state.agent is not None and st.session_state.agent.lost_context:
+            st.session_state.agent.lost_context = False
+            st.caption("이전 대화 맥락을 잃었습니다. 새 세션으로 이어갑니다.")
 
         st.markdown(answer or "_(응답이 비어 있습니다)_")
 
     st.session_state.messages.append({"role": "assistant", "content": answer})
 
 if typed:
-    if st.session_state.pending_clarification:
-        # 재질문에 대한 답. 새 질문이 아니라 같은 세션에서 이어서 처리한다.
-        st.session_state.pending_clarification = None
-        st.session_state.resume_value = typed
+    if st.session_state.pending_question:
+        # 재질문에 대한 답. 새 질문이 아니라 기다리던 턴을 이어간다.
+        st.session_state.pending_question = None
+        st.session_state.pending_answer = typed
         st.session_state.messages.append({"role": "user", "content": typed})
         st.session_state.run_prompt = typed
         st.rerun()
