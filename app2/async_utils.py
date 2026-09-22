@@ -96,7 +96,7 @@ class AgentSession:
         return self._drain()
 
     def close(self) -> None:
-        """client 를 닫고 스레드를 끝낸다. 재질문 대기는 취소된다."""
+        """client 를 닫고 스레드를 끝낸다. 재질문 대기와 진행 중인 턴은 취소된다."""
         if self._loop is None:
             return
         loop, thread = self._loop, self._thread
@@ -105,6 +105,8 @@ class AgentSession:
         if self._reply is not None:
             fut = self._reply
             loop.call_soon_threadsafe(lambda: fut.done() or fut.cancel())
+        if self._client is not None:
+            asyncio.run_coroutine_threadsafe(self._interrupt(), loop)
         loop.call_soon_threadsafe(self._requests.put_nowait, _CLOSE)
         thread.join(timeout=15)
         if thread.is_alive():
@@ -114,6 +116,16 @@ class AgentSession:
         self._client = None
         self.waiting_question = None
         self._closing = False
+        self._events = queue.Queue()  # 타임아웃난 스레드의 잔여 이벤트가 다음 세션으로 새지 않게 한다.
+
+    async def _interrupt(self) -> None:
+        """진행 중인 턴이 있으면 중단시킨다. close() 가 루프 쪽으로 스케줄한다."""
+        if self._client is None:
+            return
+        try:
+            await self._client.interrupt()
+        except Exception:  # noqa: BLE001 — 이미 닫는 중이니 실패해도 무시한다.
+            logger.warning("client.interrupt() 호출 실패", exc_info=True)
 
     def _drain(self) -> Iterator[Event]:
         while True:
@@ -153,13 +165,13 @@ class AgentSession:
                 async with self._client_factory(options=self._driver.options(self.ask_user)) as client:
                     self._client = client
                     prompt = await self._serve(client, prompt)
-            except Exception as e:  # noqa: BLE001 — client 프로세스가 죽었다. 다음 턴에 새로 만든다.
+            except Exception as e:  # noqa: BLE001 — client 가 죽었거나 드라이버가 예외를 냈다. 어느 쪽이든 UI 에 error 를 보내고 다음 턴에 client 를 새로 만든다.
                 self._client = None
                 self._reply = None
                 self.waiting_question = None
                 if self._closing:
                     return
-                logger.error("에이전트 세션 오류: %s", e)
+                logger.exception("에이전트 세션 오류")
                 self.lost_context = True
                 self._events.put(Event("error", body=str(e), is_error=True))
                 self._events.put(_END)

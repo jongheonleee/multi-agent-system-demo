@@ -3,6 +3,7 @@
 Claude Code 없이 가짜 client 로 돈다. 가짜 client 의 스크립트 항목이 callable 이면
 "모델이 AskUserQuestion 을 불렀다"는 뜻으로 options 를 넘겨 await 한다.
 """
+import asyncio
 import threading
 
 import pytest
@@ -152,6 +153,41 @@ def test_close_cancels_waiting_question_and_stops_thread(session):
     assert not thread.is_alive()
     assert session.waiting_question is None
     assert session._loop is None
+
+
+def test_close_interrupts_turn_in_flight():
+    """close() 는 재질문 대기뿐 아니라 진행 중인 턴도 interrupt() 로 끊어야 한다."""
+    resume = asyncio.Event()
+    interrupted = {"called": False}
+
+    class StuckClient(FakeClient):
+        async def interrupt(self):
+            interrupted["called"] = True
+            resume.set()
+
+    async def wait_for_interrupt(options):
+        await resume.wait()
+
+    FakeClient.instances = []
+    FakeClient.scripts = [["시작", wait_for_interrupt, _result("중단")]]
+    session = AgentSession(Driver(), client_factory=StuckClient)
+
+    it = session.send("q")
+    assert next(it).body == "시작"
+    thread = session._thread
+
+    session.close()
+
+    assert interrupted["called"]
+    assert not thread.is_alive()
+    assert session._loop is None
+
+    FakeClient.scripts = [["다음", _result("다음")]]
+    second = list(session.send("q2"))
+    assert [e.kind for e in second] == ["answer", "done"]
+    assert len(FakeClient.instances) == 2
+
+    session.close()
 
 
 def test_close_before_start_is_noop():
