@@ -32,6 +32,8 @@ class TurnState:
     domain_answers: list[DomainAnswer] = field(default_factory=list)
     # 트렌드 서브에이전트가 돌려준 답
     trend_answers: list[str] = field(default_factory=list)
+    # Stop 훅의 팩트체크 결과 {"verdict": "PASS"|"REWRITE", "score": float|None, "comment": str}. 안 돌았으면 None
+    fact_check: dict[str, Any] | None = None
     fact_checks: int = 0
     # fact_check 에 넘어온 병합 답과 판정(PASS / REWRITE)
     checked_answer: str = ""
@@ -39,7 +41,7 @@ class TurnState:
     clarifying_question: str = ""
 
 
-EventKind = Literal["tool_call", "tool_result", "answer", "clarification", "done", "error"]
+EventKind = Literal["tool_call", "tool_result", "answer", "question", "clarification", "done", "error"]
 
 
 @dataclass

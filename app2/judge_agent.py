@@ -15,8 +15,10 @@ guardrail 은 코드가 강제한다(모델이 잊어도 빠지지 않게).
 """
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
 from claude_agent_sdk import tool
 
@@ -84,15 +86,18 @@ def format_answers(answers: list[DomainAnswer]) -> str:
     )
 
 
-def _response_text(response: Any) -> str:
-    """Agent 도구 결과(서브에이전트의 최종 답)에서 텍스트만 뽑는다."""
+def response_text(response: Any) -> str:
+    """도구 결과·훅 입력에서 텍스트만 뽑는다.
+
+    받는 형식: str | 블록 리스트 | {"content": ...} | {"message": {...}} | {"result": ...} | {"text": ...}
+    (Agent 도구 결과, Stop 훅의 last_assistant_message, transcript 항목이 모두 이 중 하나다).
+    """
     if isinstance(response, str):
         return response
     if isinstance(response, dict):
-        if "content" in response:
-            return _response_text(response["content"])
-        if "result" in response:
-            return _response_text(response["result"])
+        for key in ("message", "content", "result"):
+            if key in response:
+                return response_text(response[key])
         return response.get("text", "")
     if isinstance(response, list):
         return "".join(
@@ -101,6 +106,9 @@ def _response_text(response: Any) -> str:
             if not isinstance(b, dict) or b.get("type", "text") == "text"
         )
     return str(response or "")
+
+
+_response_text = response_text
 
 
 async def decide(answer: str, answers: list[DomainAnswer]) -> tuple[str, dict]:
@@ -223,3 +231,64 @@ class Judge:
             )
 
         return fact_check_merged
+
+
+def last_assistant_text(input_data: dict[str, Any]) -> str:
+    """Stop 훅 입력에서 최종 답 텍스트. CLI 가 주는 last_assistant_message 를 쓰고, 없으면 transcript 를 읽는다."""
+    text = response_text(input_data.get("last_assistant_message"))
+    if text.strip():
+        return text
+    path = input_data.get("transcript_path")
+    if not path or not Path(path).is_file():
+        return ""
+    last = ""
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and entry.get("type") == "assistant":
+            candidate = response_text(entry.get("message"))
+            if candidate.strip():
+                last = candidate
+    return last
+
+
+class Guardrail:
+    """한 대화의 guardrail 훅. 현재 턴의 TurnState 는 turn_of() 로 받는다(턴마다 바뀐다)."""
+
+    def __init__(self, turn_of: Callable[[], TurnState]) -> None:
+        self.turn_of = turn_of
+
+    async def record_subagent_answer(self, input_data: dict, tool_use_id: str | None, context: Any) -> dict:
+        """PostToolUse(Agent). 서브에이전트가 돌려준 답을 모은다(실패한 위임은 PostToolUse 가 안 온다)."""
+        if input_data.get("agent_id"):
+            return {}
+        turn = self.turn_of()
+        tool_input = input_data.get("tool_input") or {}
+        agent = tool_input.get("subagent_type")
+        text = response_text(input_data.get("tool_response"))
+        if agent in DOMAINS:
+            turn.domain_answers.append(DomainAnswer(domain=agent, question=tool_input.get("prompt", ""), answer=text))
+        elif agent == TREND_AGENT:
+            turn.trend_answers.append(text)
+        return {}
+
+    async def fact_check_on_stop(self, input_data: dict, tool_use_id: str | None, context: Any) -> dict:
+        """Stop. 도메인 답이 2개 이상이면 최종 답을 검증하고, 미달이면 한 번 고쳐 쓰게 한다.
+
+        두 번째 Stop 은 stop_hook_active 가 True 라 그대로 통과한다 — app/ 의 "1회 재작성"이
+        SDK 내장 의미론으로 구현된다.
+        """
+        turn = self.turn_of()
+        if input_data.get("stop_hook_active") or len(turn.domain_answers) < 2:
+            return {}
+        answer = last_assistant_text(input_data)
+        if not answer.strip():
+            return {}
+        verdict, report = await decide(answer, turn.domain_answers)
+        comment = report.get("overall_accuracy_comment", "")
+        turn.fact_check = {"verdict": verdict, "score": report.get("overall_accuracy"), "comment": comment}
+        if verdict == "PASS":
+            return {}
+        return {"decision": "block", "reason": f"{FIX_RULES}\n\n> 검증 결과\n{comment}"}
