@@ -85,7 +85,7 @@ def test_ask_user_question_reaches_can_use_tool_in_default_mode():
     result = asyncio.run(run())
     assert seen.get("tool") == "AskUserQuestion", seen
     assert seen["input"]["questions"][0]["question"]
-    assert "파란" in (result.result or "")
+    assert any(w in (result.result or "") for w in ("파란", "파랑")), result.result
 
 
 def test_stop_hook_input_carries_last_assistant_message():
