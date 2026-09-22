@@ -44,3 +44,79 @@ def test_vague_design_request_triggers_clarification():
     assert "clarification" in kinds
     assert _delegations(events) == []
     assert events[-1].data["session_id"]
+
+
+# ---------------------------------------------------------------------------
+# SDK 실측 — 설계가 기대는 사실. 실패하면 설계를 고쳐야 한다.
+# ---------------------------------------------------------------------------
+def test_ask_user_question_reaches_can_use_tool_in_default_mode():
+    """tools=["AskUserQuestion"] + permission_mode="default" 면 AskUserQuestion 이 can_use_tool 로 온다."""
+    import asyncio
+
+    from claude_agent_sdk import ClaudeSDKClient, PermissionResultAllow, ResultMessage
+
+    from models import AGENT_MAX_TOKENS, base_env, isolated_options
+
+    seen = {}
+
+    async def gate(tool_name, input_data, context):
+        seen["tool"] = tool_name
+        seen["input"] = input_data
+        questions = input_data.get("questions") or []
+        return PermissionResultAllow(
+            updated_input={"questions": questions, "answers": {q["question"]: "파란색" for q in questions}}
+        )
+
+    async def run():
+        options = isolated_options(
+            model="claude-sonnet-5",
+            system_prompt="사용자에게 좋아하는 색을 AskUserQuestion 으로 물은 뒤, 그 색을 한 단어로 답하세요.",
+            tools=["AskUserQuestion"],
+            permission_mode="default",
+            can_use_tool=gate,
+            env=base_env(AGENT_MAX_TOKENS),
+        )
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query("시작")
+            async for m in client.receive_response():
+                if isinstance(m, ResultMessage):
+                    return m
+
+    result = asyncio.run(run())
+    assert seen.get("tool") == "AskUserQuestion", seen
+    assert seen["input"]["questions"][0]["question"]
+    assert "파란" in (result.result or "")
+
+
+def test_stop_hook_input_carries_last_assistant_message():
+    """Stop 훅 입력에 last_assistant_message(또는 transcript_path)가 있다."""
+    import asyncio
+
+    from claude_agent_sdk import ClaudeSDKClient, HookMatcher, ResultMessage
+
+    from models import AGENT_MAX_TOKENS, base_env, isolated_options
+
+    seen = {}
+
+    async def on_stop(input_data, tool_use_id, context):
+        seen.update(input_data)
+        return {}
+
+    async def run():
+        options = isolated_options(
+            model="claude-sonnet-5",
+            system_prompt="숫자만 답하세요.",
+            tools=[],
+            hooks={"Stop": [HookMatcher(hooks=[on_stop])]},
+            env=base_env(AGENT_MAX_TOKENS),
+        )
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query("1+1은?")
+            async for m in client.receive_response():
+                if isinstance(m, ResultMessage):
+                    return m
+
+    asyncio.run(run())
+    assert "stop_hook_active" in seen
+    assert "last_assistant_message" in seen or "transcript_path" in seen, sorted(seen)
+    print("STOP HOOK INPUT KEYS:", sorted(seen), "last_assistant_message=", repr(seen.get("last_assistant_message"))[:300])
