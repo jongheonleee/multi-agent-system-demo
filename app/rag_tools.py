@@ -1,33 +1,107 @@
-"""공용 RAG 도구.
+"""
 
-Pinecone 논문 벡터 검색과 팩트체크. 여러 에이전트가 함께 쓴다.
+> - Pinecone 논문 벡터 검색과 팩트체크
+> - 여러 에이전트들이 사용(공유)
 
-  vector_search_tool -> domain_agents 의 ai 도메인
-  fact_check_tool    -> judge_agent 의 병합 guardrail
 """
 from __future__ import annotations
 
 import logging
 import os
-from typing import Literal, Sequence
 
+from typing import Literal, Sequence
+from pinecone import Pinecone
+from pydantic import BaseModel, Field
 from langchain.tools import tool
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_pinecone import PineconeVectorStore
-from pinecone import Pinecone
-from pydantic import BaseModel, Field
 
 from models import get_model, get_embeddings, get_original_reranker
 
 logger = logging.getLogger(__name__)
 
 
-# --------------------------------------------------------------------------
-# 벡터 검색
-# --------------------------------------------------------------------------
+# 검증 자체가 불가능했음을 나타내는 플래그. 
+# - 모델 응답이 잘렸거나 출처가 없을 때 사용 
+VERIFY_FAILED_COMMENT_PREFIX = "[검증불가]"
+
+# 팩트 체크용 모델이 사용할 프롬프트 
+FACT_CHECK_PROMPT = ChatPromptTemplate.from_template(
+    """> 
+### 역할: 
+- 1. 당신은 꼼꼼한 팩트 체커 AI입니다.
+- 2. 제공된 출처 문서만을 근거로 주어진 답변의 사실인지 검증합니다.
+
+### 검증할 답변:
+- {answer}
+
+### 출처 문서:
+- {context}
+
+### 지시사항: 
+- 1. 답변을 개별 사실 주장 또는 문장 단위로 분해할 것 
+- 2. 각 문장을 출처 문서와 대조해 다음 중 하나로 판정합니다.
+     - `accurate`: 출처 문서가 직접적이고 완전하게 뒷받침함
+     - `partially accurate`: 부분적으로 뒷받침되거나 뉘앙스 차이·누락이 있음
+     - `inaccurate`: 출처 문서와 모순됨
+     - `unverifiable`: 제공된 출처만으로는 검증할 수 없음
+- 3. 각 문장에 신뢰도 점수(0.0~1.0)를 매깁니다.
+- 4. accurate / partially accurate 이면 뒷받침하는 출처를 명시하고,unverifiable / inaccurate 이면 그 이유를 서술합니다.
+- 5. 전체 정확도 점수(문장별 평균)와 요약 코멘트를 작성합니다.
+"""
+)
+
+
+# 한 문장에 대한 팩트 체크용 모델(DTO)
+class SentenceFactCheckResult(BaseModel):
+    sentence: str = Field(
+        ..., 
+        description="사실 확인 중인 문장"
+    )
+
+    verdict: Literal["accurate", "partially accurate", "inaccurate", "unverifiable"] = Field(
+        ..., 
+        description="사실 확인 판정"
+    )
+
+    source: str | None = Field(
+        None,
+        description="해당 문장을 뒷받침하거나 반박하는 출처"
+    )
+
+    score: float = Field(
+        ..., 
+        description="진술의 신뢰도 점수 (0.0 ~ 1.0)"
+    )
+
+    reason: str | None = Field(
+        None, 
+        description="정확하지 않은 경우 그 판단의 이유"
+    )
+
+# 여러 문장에 대한 팩트 체크용 모델(DTO)
+class FactCheckResult(BaseModel):
+    sentences: list[SentenceFactCheckResult] = Field(
+        ..., 
+        description="각 문장에 대한 사실 확인 결과"
+    )
+
+    overall_accuracy: float = Field(
+        ..., 
+        description="전체 정확도 점수 (0.0 ~ 1.0)"
+    )
+
+    overall_accuracy_comment: str = Field(
+        ..., 
+        description="전체 정확도에 대한 설명"
+    )
+
+
 def get_doc_compress_reranker(docs: list, query: str) -> Sequence[Document]:
+
     """문서를 질문과의 관련도 순으로 재정렬한다."""
+
     return get_original_reranker().compress_documents(documents=docs, query=query)
 
 
@@ -71,67 +145,23 @@ def vector_search_tool(query: str) -> Sequence[Document]:
         return []
 
 
-# --------------------------------------------------------------------------
-# 팩트체크
-# --------------------------------------------------------------------------
-class SentenceFactCheckResult(BaseModel):
-    sentence: str = Field(..., description="사실 확인 중인 문장")
-    verdict: Literal["accurate", "partially accurate", "inaccurate", "unverifiable"] = Field(
-        ..., description="사실 확인 판정"
-    )
-    source: str | None = Field(None, description="해당 문장을 뒷받침하거나 반박하는 출처")
-    score: float = Field(..., description="진술의 신뢰도 점수 (0.0 ~ 1.0)")
-    reason: str | None = Field(None, description="정확하지 않은 경우 그 판단의 이유")
-
-
-class FactCheckResult(BaseModel):
-    sentences: list[SentenceFactCheckResult] = Field(
-        ..., description="각 문장에 대한 사실 확인 결과"
-    )
-    overall_accuracy: float = Field(..., description="전체 정확도 점수 (0.0 ~ 1.0)")
-    overall_accuracy_comment: str = Field(..., description="전체 정확도에 대한 설명")
-
 
 # 검증 자체가 불가능했음을 나타내는 플래그. 모델 응답이 잘렸거나 출처가 없을 때다.
 # 이걸 정확도 0.0 과 구분하지 않으면, 검증 실패가 "부정확한 답변"으로 오인되어
 # 멀쩡한 답변을 재작성시킨다.
-VERIFY_FAILED_COMMENT_PREFIX = "[검증불가]"
 
-
-FACT_CHECK_PROMPT = ChatPromptTemplate.from_template(
-    """> 역할
-- 1. 당신은 꼼꼼한 팩트 체커 AI입니다.
-- 2. 제공된 출처 문서만을 근거로 주어진 답변의 사실적 정확성을 검증합니다.
-
-**검증할 답변:**
-{answer}
-
-**출처 문서:**
-{context}
-
-**지시사항**
-- 1. 답변을 개별 사실 주장 또는 문장 단위로 분해합니다.
-- 2. 각 문장을 출처 문서와 대조해 다음 중 하나로 판정합니다.
-     - `accurate`: 출처 문서가 직접적이고 완전하게 뒷받침함
-     - `partially accurate`: 부분적으로 뒷받침되거나 뉘앙스 차이·누락이 있음
-     - `inaccurate`: 출처 문서와 모순됨
-     - `unverifiable`: 제공된 출처만으로는 검증할 수 없음
-- 3. 각 문장에 신뢰도 점수(0.0~1.0)를 매깁니다.
-- 4. accurate / partially accurate 이면 뒷받침하는 출처를 명시하고,
-     unverifiable / inaccurate 이면 그 이유를 서술합니다.
-- 5. 전체 정확도 점수(문장별 평균)와 요약 코멘트를 작성합니다.
-"""
-)
 
 
 @tool(description="생성된 텍스트를 출처 문서와 대조해 문장 단위로 사실 검증한다")
 def fact_check_tool(text: str, context: str | None = None) -> dict:
+
     """주어진 텍스트의 사실 여부를 출처 문서 기반으로 확인한다.
 
     context 가 없으면 검증할 근거가 없다는 뜻이다. 예전에는 여기서 질문과
     무관한 Gemini 논문 스니펫을 하드코딩해 대신 썼는데, 그러면 엉뚱한 문서로
     검증이 통과해버려 guardrail 이 무의미해진다. 이제는 검증 불가로 반환한다.
     """
+
     if not context:
         return FactCheckResult(
             sentences=[],
@@ -140,7 +170,7 @@ def fact_check_tool(text: str, context: str | None = None) -> dict:
         ).model_dump()
 
     try:
-        # 문장마다 판정을 내므로 출력이 길다. 기본 4096 이면 잘려서 파싱이 실패한다.
+
         model = get_model("judge", max_tokens=16000)
         chain = FACT_CHECK_PROMPT | model.with_structured_output(FactCheckResult)
         result = chain.invoke({"answer": text, "context": context})
