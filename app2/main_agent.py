@@ -41,7 +41,7 @@ from claude_agent_sdk import (
 )
 
 from domain_agents import DOMAINS, build_domain_agents
-from general_it_trend_topic_agent import TREND_AGENT, WEB_TOOLS, build_trend_agent, web_server
+from general_it_trend_topic_agent import TREND_AGENT, WEB_TOOLS, build_trend_agent
 from judge_agent import (
     AGENT_TOOL_NAMES,
     DECOMPOSE_RULES,
@@ -175,7 +175,6 @@ def build_options(turn: TurnState, resume: str | None = None):
         agents=agents,
         mcp_servers={
             RAG_SERVER: rag_server(),
-            "web": web_server(),
             JUDGE_SERVER: create_sdk_mcp_server(JUDGE_SERVER, tools=[judge.fact_check_tool()]),
             ORCHESTRATOR_SERVER: create_sdk_mcp_server(ORCHESTRATOR_SERVER, tools=[_clarify_tool(turn)]),
         },

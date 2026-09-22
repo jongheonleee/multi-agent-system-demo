@@ -39,7 +39,7 @@ def test_options_wire_subagents_tools_and_hooks():
     # 내장 도구는 서브에이전트 호출용 Agent 하나만
     assert opts.tools == ["Agent"]
     assert set(opts.agents) == {"server_infra", "system_design", "ai", "general_it_trend"}
-    assert set(opts.mcp_servers) == {"rag", "web", "judge", "orchestrator"}
+    assert set(opts.mcp_servers) == {"rag", "judge", "orchestrator"}
     assert opts.permission_mode == "dontAsk"
     assert "mcp__judge__fact_check" in opts.allowed_tools
     assert "mcp__orchestrator__request_clarification" in opts.allowed_tools
@@ -59,7 +59,7 @@ def test_options_resume_session():
 
 @pytest.mark.parametrize("tool,agent_id,expected", [
     ("mcp__rag__vector_search_tool", None, "deny"),
-    ("mcp__web__web_search_tool", None, "deny"),
+    ("WebSearch", None, "deny"),
     ("mcp__obsidian__vault_read", None, "deny"),
     ("mcp__rag__vector_search_tool", "sub-1", "pass"),
     ("Agent", None, "pass"),
