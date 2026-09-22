@@ -28,3 +28,6 @@ image.png
 # ── 로그 ─────────────────────────────────────────
 *.log
 err*.log
+
+# ── superpowers SDD 작업 디렉터리 (스크래치) ──────
+.superpowers/
